@@ -110,11 +110,7 @@ sdk.api.abi.call = async (...args) => {
   } catch (e) {
     console.log(e)
   }
-  // await initCache()
-  const chains = Object.keys(module).filter(item => typeof module[item] === 'object' && !Array.isArray(module[item]));
-  checkExportKeys(module, passedFile, chains)
   const unixTimestamp = Math.round(Date.now() / 1000) - 60;
-  // const { chainBlocks } = await getCurrentBlocks([]); // fetch only ethereum block for local test
   const chainBlocks = {}
   const ethBlock = chainBlocks.ethereum;
   const usdTvls = {};
@@ -123,7 +119,7 @@ sdk.api.abi.call = async (...args) => {
   const chainTvlsToAdd = {};
   const knownTokenPrices = {};
 
-  let tvlPromises = Object.entries(module).map(async ([chain, value]) => {
+  let tvlPromises = Object.entries(module).filter(([chain]) => chain == 'taiko').map(async ([chain, value]) => {
     if (typeof value !== "object" || value === null) {
       return;
     }
@@ -200,7 +196,16 @@ sdk.api.abi.call = async (...args) => {
     );
   }
 
-  Object.entries(usdTokenBalances).forEach(([chain, balances]) => {
+  Object.entries(tokensBalances).filter(([chain]) => chain == 'taiko').forEach(([chain, balances]) => {
+    console.log(`--- ${chain} ---`);
+    Object.entries(balances).filter(([symbol]) => !symbol.includes("UNKNOWN"))
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([symbol, balance]) => {
+        console.log(symbol.padEnd(25, " "), humanizeNumber(balance));
+      });
+  });
+
+  Object.entries(usdTokenBalances).filter(([chain]) => chain == 'taiko').forEach(([chain, balances]) => {
     console.log(`--- ${chain} ---`);
     Object.entries(balances)
       .sort((a, b) => b[1] - a[1])
@@ -209,90 +214,8 @@ sdk.api.abi.call = async (...args) => {
       });
     console.log("Total:", humanizeNumber(usdTvls[chain]), "\n");
   });
-  console.log(`------ TVL ------`);
-  const usdVals = Object.entries(usdTvls)
-  usdVals.sort((a, b) => b[1] - a[1])
-  usdVals.forEach(([chain, usdTvl]) => {
-    if (chain !== "tvl") {
-      console.log(chain.padEnd(25, " "), humanizeNumber(Math.round(usdTvl)));
-    }
-  });
-  console.log("\ntotal".padEnd(25, " "), humanizeNumber(usdTvls.tvl), "\n");
-
-  await preExit()
   process.exit(0);
 })();
-
-
-function checkExportKeys(module, filePath, chains) {
-  filePath = filePath.split(path.sep)
-  filePath = filePath.slice(filePath.lastIndexOf('projects') + 1)
-
-  if (filePath.length > 2
-    || (filePath.length === 1 && !['.js', ''].includes(path.extname(filePath[0]))) // matches .../projects/projectXYZ.js or .../projects/projectXYZ
-    || (filePath.length === 2 &&
-      !(['api.js', 'index.js', 'apiCache.js',].includes(filePath[1])  // matches .../projects/projectXYZ/index.js
-        || ['treasury', 'entities'].includes(filePath[0])  // matches .../projects/treasury/project.js
-      )))
-    process.exit(0)
-
-  const blacklistedRootExportKeys = ['tvl', 'staking', 'pool2', 'borrowed', 'treasury', 'offers', 'vesting'];
-  const rootexportKeys = Object.keys(module).filter(item => typeof module[item] !== 'object');
-  const unknownChains = chains.filter(chain => !chainList.includes(chain));
-  const blacklistedKeysFound = rootexportKeys.filter(key => blacklistedRootExportKeys.includes(key));
-  let exportKeys = chains.map(chain => Object.keys(module[chain])).flat()
-  exportKeys.push(...rootexportKeys)
-  exportKeys = Object.keys(exportKeys.reduce((agg, key) => ({ ...agg, [key]: 1 }), {})) // get unique keys
-  const unknownKeys = exportKeys.filter(key => !whitelistedExportKeys.includes(key))
-
-  const hallmarks = module.hallmarks || [];
-
-  if (hallmarks.length) {
-    const TIMESTAMP_LENGTH = 10;
-    hallmarks.forEach(([timestamp, text]) => {
-      const strTimestamp = String(timestamp)
-      if (strTimestamp.length !== TIMESTAMP_LENGTH) {
-        throw new Error(`
-        Incorrect time format for the hallmark: [${strTimestamp}, ${text}] ,please use unix timestamp
-        `)
-      }
-    })
-  }
-
-
-  if (unknownChains.length) {
-    throw new Error(`
-    Unknown chain(s): ${unknownChains.join(', ')}
-    Note: if you think that the chain is correct but missing from our list, please add it to 'projects/helper/chains.json' file
-    `)
-  }
-
-  if (blacklistedKeysFound.length) {
-    throw new Error(`
-    Please move the following keys into the chain: ${blacklistedKeysFound.join(', ')}
-
-    We have a new adapter export specification now where tvl and other chain specific information are moved inside chain export.
-    For example if your protocol is on ethereum and has tvl and pool2, the export file would look like:
-    
-        module.exports = {
-          methodlogy: '...',
-          ethereum: {
-            tvl: 
-            pool2:
-          }
-        }
-
-    `)
-  }
-
-  if (unknownKeys.length) {
-    throw new Error(`
-    Found export keys that were not part of specification: ${unknownKeys.join(', ')}
-
-    List of valid keys: ${['', '', ...whitelistedExportKeys].join('\n\t\t\t\t')}
-    `)
-  }
-}
 
 
 process.on('unhandledRejection', handleError)
@@ -441,29 +364,3 @@ function buildPricesGetQueries(readKeys) {
   return queries
 }
 
-async function initCache() {
-  let currentCache = await sdk.cache.readCache(INTERNAL_CACHE_FILE)
-  // if (process.env.NO_EXIT_ON_LONG_RUN_RPC)
-  //   sdk.log('cache size:', JSON.stringify(currentCache).length, 'chains:', Object.keys(currentCache).length)
-  const ONE_WEEK = 60 * 60 * 24 * 31
-  if (!currentCache || !currentCache.startTime || (Date.now() / 1000 - currentCache.startTime > ONE_WEEK)) {
-    currentCache = {
-      startTime: Math.round(Date.now() / 1000),
-    }
-    await sdk.cache.writeCache(INTERNAL_CACHE_FILE, currentCache)
-  }
-  sdk.sdkCache.startCache(currentCache)
-}
-
-async function saveSdkInternalCache() {
-  await sdk.cache.writeCache(INTERNAL_CACHE_FILE, sdk.sdkCache.retriveCache(), { skipR2CacheWrite: true })
-}
-
-async function preExit() {
-  // try {
-  //     await saveSdkInternalCache() // save sdk cache to r2
-  // } catch (e) {
-  //   if (process.env.NO_EXIT_ON_LONG_RUN_RPC)
-  //     sdk.error(e)
-  // }
-}
